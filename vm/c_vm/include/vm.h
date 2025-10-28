@@ -60,4 +60,8 @@ Value vm_get_object_field(VM *vm, int obj_idx, int field);
 typedef Value (*NativeFn)(VM *vm, int nargs, const Value *args);
 void vm_register_native(VM *vm, int index, NativeFn fn);
 
+/* Duplicate a C string using malloc; provided to avoid implicit strdup warnings on
+    platforms where strdup is not declared by default. Caller should free the result. */
+char *vm_strdup(const char *s);
+
 #endif

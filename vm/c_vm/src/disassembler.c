@@ -108,6 +108,27 @@ void disassemble_bytecode(const Bytecode *bc, FILE *os)
             fprintf(os, "OP_THROW r%d\n", r);
             break;
         }
+        case OP_MK_CLOSURE:
+        {
+            int32_t dst = read_i32(bc->code, bc->code_size, &ip);
+            int32_t ci = read_i32(bc->code, bc->code_size, &ip);
+            int32_t nc = read_i32(bc->code, bc->code_size, &ip);
+            fprintf(os, "OP_MK_CLOSURE r%d const#%d ncaptures=%d\n", dst, ci, nc);
+            for (int i = 0; i < nc; ++i)
+            {
+                int32_t r = read_i32(bc->code, bc->code_size, &ip);
+                fprintf(os, "    capture r%d\n", r);
+            }
+            break;
+        }
+        case OP_CALL_CLOSURE:
+        {
+            int32_t robj = read_i32(bc->code, bc->code_size, &ip);
+            int32_t nargs = read_i32(bc->code, bc->code_size, &ip);
+            int32_t dst = read_i32(bc->code, bc->code_size, &ip);
+            fprintf(os, "OP_CALL_CLOSURE robj=r%d nargs=%d dst=r%d\n", robj, nargs, dst);
+            break;
+        }
         case OP_PUSH_HANDLER:
         {
             int32_t rel = read_i32(bc->code, bc->code_size, &ip);

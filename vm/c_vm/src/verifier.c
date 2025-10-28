@@ -46,10 +46,30 @@ const char *verify_bytecode(const Bytecode *bc)
             ip += 4;
             break;
         case OP_THROW:
-            ip += 4;
+            ip += 4; /* register operand */
             break;
         case OP_PUSH_HANDLER:
             ip += 4;
+            break;
+        case OP_MK_CLOSURE:
+        {
+            /* dst (4), const idx (4), ncaptures (4), then ncaptures * 4 bytes of register indices */
+            if (ip + 12 > bc->code_size)
+                return "truncated mk_closure";
+            int32_t nc = 0;
+            memcpy(&nc, &bc->code[ip + 8], 4); /* read ncaptures */
+            if (nc < 0)
+                return "negative ncaptures";
+            if ((size_t)(ip + 12 + (size_t)nc * 4) > bc->code_size)
+                return "truncated mk_closure captures";
+            ip += 12 + (size_t)nc * 4;
+            break;
+        }
+        case OP_CALL_CLOSURE:
+            /* obj_reg (4), nargs (4), dst (4) */
+            if (ip + 12 > bc->code_size)
+                return "truncated call_closure";
+            ip += 12;
             break;
         case OP_POP_HANDLER:
             break;

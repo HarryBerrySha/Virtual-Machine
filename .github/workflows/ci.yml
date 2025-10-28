@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install CMake (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake
+
+      - name: Install CMake (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+
+      - name: Configure CMake
+        run: |
+          mkdir -p vm/c_vm/build
+          cd vm/c_vm/build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build all VM targets
+        run: |
+          cd vm/c_vm/build
+          cmake --build . --config Release
+
+      - name: Run VM tests (ctest regex vm_.*)
+        run: |
+          cd vm/c_vm/build
+          ctest --output-on-failure -R "vm_.*" -C Release

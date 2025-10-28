@@ -1,6 +1,7 @@
 #include "../include/bytecode.h"
 #include <stdlib.h>
 #include <string.h>
+#include "../include/util.h"
 
 void bc_init(Bytecode *bc)
 {
@@ -80,7 +81,7 @@ int bc_add_const_string(Bytecode *bc, const char *s)
 {
     ensure_const_cap(bc);
     bc->consts[bc->consts_count].type = CONST_STRING;
-    bc->consts[bc->consts_count].value.s = strdup(s);
+    bc->consts[bc->consts_count].value.s = vm_strdup(s);
     return bc->consts_count++;
 }
 int bc_add_const_function(Bytecode *bc, int start, int nargs)

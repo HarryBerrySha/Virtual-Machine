@@ -68,7 +68,9 @@ enum OpCode
     OP_RET,
     OP_THROW,
     OP_PUSH_HANDLER,
-    OP_POP_HANDLER
+    OP_POP_HANDLER,
+    OP_MK_CLOSURE,
+    OP_CALL_CLOSURE
 };
 
 #endif

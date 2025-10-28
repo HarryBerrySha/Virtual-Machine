@@ -5,6 +5,20 @@
 #include <string.h>
 #include <stdio.h>
 
+/* portable strdup implementation to avoid implicit declaration warnings on some
+   platforms. Implemented here and declared in include/util.h and include/vm.h. */
+char *vm_strdup(const char *s)
+{
+    if (!s)
+        return NULL;
+    size_t n = strlen(s) + 1;
+    char *p = (char *)malloc(n);
+    if (!p)
+        return NULL;
+    memcpy(p, s, n);
+    return p;
+}
+
 typedef struct HeapString
 {
     char *s;
@@ -25,6 +39,7 @@ typedef struct Frame
     int return_ip;
     int return_dst;
     Value *saved_regs;
+    int saved_count;
     struct Frame *next;
 } Frame;
 
@@ -48,6 +63,7 @@ struct VM
     int call_cap;
     /* frame list for user function calls */
     Frame *frames;
+    int frames_count;
     /* handler stack */
     int *handlers;
     int handlers_count;
@@ -87,6 +103,7 @@ VM *vm_create(const VMOptions *opts)
     vm->natives_count = 0;
     vm->natives_cap = 0;
     vm->frames = NULL;
+    vm->frames_count = 0;
     return vm;
 }
 
@@ -183,32 +200,35 @@ static void heap_mark_from_roots(VM *vm)
             }
         }
     }
-    /* mark from frames' saved regs */
+    /* mark from frames' saved regs (we save only the callee-clobbered subset) */
     Frame *fr = vm->frames;
     while (fr)
     {
-        for (int i = 0; i < vm->opts.num_registers; ++i)
+        if (fr->saved_regs && fr->saved_count > 0)
         {
-            if (fr->saved_regs[i].type == V_STRING)
+            for (int i = 0; i < fr->saved_count; ++i)
             {
-                int idx = fr->saved_regs[i].as.str_idx;
-                HeapString *cur = vm->heap_head;
-                int j = 0;
-                while (cur && j < idx)
+                if (fr->saved_regs[i].type == V_STRING)
                 {
-                    cur = cur->next;
-                    ++j;
+                    int idx = fr->saved_regs[i].as.str_idx;
+                    HeapString *cur = vm->heap_head;
+                    int j = 0;
+                    while (cur && j < idx)
+                    {
+                        cur = cur->next;
+                        ++j;
+                    }
+                    if (cur)
+                        cur->marked = 1;
                 }
-                if (cur)
-                    cur->marked = 1;
-            }
-            else if (fr->saved_regs[i].type == V_OBJECT)
-            {
-                int idx = fr->saved_regs[i].as.obj_idx;
-                if (idx >= 0 && (size_t)idx < vm->obj_count)
+                else if (fr->saved_regs[i].type == V_OBJECT)
                 {
-                    if (vm->obj_array[idx].alive)
-                        vm->obj_array[idx].marked = 1;
+                    int idx = fr->saved_regs[i].as.obj_idx;
+                    if (idx >= 0 && (size_t)idx < vm->obj_count)
+                    {
+                        if (vm->obj_array[idx].alive)
+                            vm->obj_array[idx].marked = 1;
+                    }
                 }
             }
         }
@@ -331,7 +351,7 @@ void vm_gc(VM *vm)
 int vm_alloc_string(VM *vm, const char *s)
 {
     HeapString *hs = (HeapString *)malloc(sizeof(HeapString));
-    hs->s = strdup(s);
+    hs->s = vm_strdup(s);
     hs->marked = 0;
     hs->next = NULL;
     if (!vm->heap_head)
@@ -592,7 +612,6 @@ const char *vm_run(VM *vm)
             vm->ip += 4;
             if (fi >= 0 && fi < vm->natives_count && vm->natives[fi])
             {
-                /* gather args from regs 0..nargs-1 into temp array */
                 Value *args = NULL;
                 if (nargs > 0)
                 {
@@ -626,14 +645,25 @@ const char *vm_run(VM *vm)
             if (fc->type != CONST_FUNCTION)
                 return "const is not a function";
             int target = fc->value.func.start;
-            /* push frame: snapshot regs */
+            /* push frame: save only registers that will be clobbered by callee (0..nargs-1) */
             Frame *f = (Frame *)malloc(sizeof(Frame));
-            f->saved_regs = (Value *)malloc(sizeof(Value) * vm->opts.num_registers);
-            memcpy(f->saved_regs, vm->regs, sizeof(Value) * vm->opts.num_registers);
+            if (nargs > 0)
+            {
+                f->saved_regs = (Value *)malloc(sizeof(Value) * nargs);
+                for (int si = 0; si < nargs; ++si)
+                    f->saved_regs[si] = vm->regs[si];
+                f->saved_count = nargs;
+            }
+            else
+            {
+                f->saved_regs = NULL;
+                f->saved_count = 0;
+            }
             f->return_ip = vm->ip;
             f->return_dst = dst;
             f->next = vm->frames;
             vm->frames = f;
+            vm->frames_count++;
             /* jump to function start */
             vm->ip = (size_t)target;
             break;
@@ -649,20 +679,55 @@ const char *vm_run(VM *vm)
             Frame *f = vm->frames;
             vm->frames = f->next;
             Value retval = vm->regs[r];
-            /* restore caller regs */
-            memcpy(vm->regs, f->saved_regs, sizeof(Value) * vm->opts.num_registers);
+            /* restore only the saved registers */
+            if (f->saved_count > 0 && f->saved_regs)
+            {
+                for (int si = 0; si < f->saved_count; ++si)
+                    vm->regs[si] = f->saved_regs[si];
+            }
             /* store return value into return_dst */
             vm->regs[f->return_dst] = retval;
             int ret_ip = f->return_ip;
             if (f->saved_regs)
                 free(f->saved_regs);
             free(f);
+            vm->frames_count--;
             vm->ip = (size_t)ret_ip;
             break;
         }
         case OP_THROW:
         {
-            return "unhandled exception";
+            int32_t rsrc;
+            memcpy(&rsrc, &vm->bc.code[vm->ip], 4);
+            vm->ip += 4;
+            if (rsrc < 0 || rsrc >= vm->opts.num_registers)
+                return "bad throw register";
+            vm->regs[0] = vm->regs[rsrc];
+
+            if (vm->handlers_count == 0)
+                return "unhandled exception";
+            int entry_idx = vm->handlers_count - 1;
+            int handler_loc = vm->handlers[entry_idx * 2];
+            int handler_frames = vm->handlers[entry_idx * 2 + 1];
+            /* pop handler */
+            vm->handlers_count--;
+
+            /* unwind frame stack until we reach handler_frames */
+            while (vm->frames_count > handler_frames)
+            {
+                Frame *ff = vm->frames;
+                if (!ff)
+                    break;
+                vm->frames = ff->next;
+                if (ff->saved_regs)
+                    free(ff->saved_regs);
+                free(ff);
+                vm->frames_count--;
+            }
+
+            /* jump to handler location; exception value is available in r0 */
+            vm->ip = (size_t)handler_loc;
+            break;
         }
         case OP_PUSH_HANDLER:
         {
@@ -672,16 +737,100 @@ const char *vm_run(VM *vm)
             if (vm->handlers_count + 1 > vm->handlers_cap)
             {
                 int newcap = vm->handlers_cap ? vm->handlers_cap * 2 : 8;
-                vm->handlers = realloc(vm->handlers, newcap * sizeof(int));
+                vm->handlers = realloc(vm->handlers, newcap * 2 * sizeof(int));
                 vm->handlers_cap = newcap;
             }
-            vm->handlers[vm->handlers_count++] = loc;
+            int e = vm->handlers_count++;
+            vm->handlers[e * 2] = loc;
+            vm->handlers[e * 2 + 1] = vm->frames_count;
             break;
         }
         case OP_POP_HANDLER:
         {
             if (vm->handlers_count > 0)
                 vm->handlers_count--;
+            break;
+        }
+        case OP_MK_CLOSURE:
+        {
+            int32_t dst, ci, nc;
+            memcpy(&dst, &vm->bc.code[vm->ip], 4);
+            vm->ip += 4;
+            memcpy(&ci, &vm->bc.code[vm->ip], 4);
+            vm->ip += 4;
+            memcpy(&nc, &vm->bc.code[vm->ip], 4);
+            vm->ip += 4;
+            if (ci < 0 || (size_t)ci >= vm->bc.consts_count)
+                return "bad function const index";
+            int obj_idx = vm_alloc_object(vm, nc + 1);
+            Value v;
+            v.type = V_INT;
+            v.as.i = ci;
+            vm_set_object_field(vm, obj_idx, 0, v);
+            for (int i = 0; i < nc; ++i)
+            {
+                int32_t r;
+                memcpy(&r, &vm->bc.code[vm->ip], 4);
+                vm->ip += 4;
+                if (r < 0 || r >= vm->opts.num_registers)
+                    return "bad capture register";
+                vm_set_object_field(vm, obj_idx, 1 + i, vm->regs[r]);
+            }
+            vm->regs[dst].type = V_OBJECT;
+            vm->regs[dst].as.obj_idx = obj_idx;
+            break;
+        }
+        case OP_CALL_CLOSURE:
+        {
+            int32_t objr, nargs, dst;
+            memcpy(&objr, &vm->bc.code[vm->ip], 4);
+            vm->ip += 4;
+            memcpy(&nargs, &vm->bc.code[vm->ip], 4);
+            vm->ip += 4;
+            memcpy(&dst, &vm->bc.code[vm->ip], 4);
+            vm->ip += 4;
+            if (objr < 0 || objr >= vm->opts.num_registers)
+                return "bad closure obj register";
+            if (vm->regs[objr].type != V_OBJECT)
+                return "call_closure expected object";
+            int obj_idx = vm->regs[objr].as.obj_idx;
+            if (obj_idx < 0 || (size_t)obj_idx >= vm->obj_count)
+                return "closure object oob";
+            HeapObject *co = &vm->obj_array[obj_idx];
+            if (!co->alive)
+                return "dead closure object";
+            Value fval = co->fields[0];
+            if (fval.type != V_INT)
+                return "closure missing function index";
+            int ci = (int)fval.as.i;
+            if (ci < 0 || (size_t)ci >= vm->bc.consts_count)
+                return "bad function const index in closure";
+            Constant *fc = &vm->bc.consts[ci];
+            if (fc->type != CONST_FUNCTION)
+                return "closure const not a function";
+            int target = fc->value.func.start;
+            Frame *f = (Frame *)malloc(sizeof(Frame));
+            if (nargs > 0)
+            {
+                f->saved_regs = (Value *)malloc(sizeof(Value) * nargs);
+                for (int si = 0; si < nargs; ++si)
+                    f->saved_regs[si] = vm->regs[si];
+                f->saved_count = nargs;
+            }
+            else
+            {
+                f->saved_regs = NULL;
+                f->saved_count = 0;
+            }
+            f->return_ip = vm->ip;
+            f->return_dst = dst;
+            f->next = vm->frames;
+            vm->frames = f;
+            vm->frames_count++;
+            int cap = co->field_count - 1;
+            for (int i = 0; i < cap; ++i)
+                vm->regs[nargs + i] = co->fields[1 + i];
+            vm->ip = (size_t)target;
             break;
         }
         default:
