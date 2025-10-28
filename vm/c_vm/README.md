@@ -49,3 +49,33 @@ cmake --build . --target vm_closure_test
 - native function registry and better CALL/RET semantics
 - a small compiler from a toy language to the VM bytecode
 - unit tests and additional opcodes
+
+Compiler example: emitting closures
+----------------------------------
+
+`examples/compiler_closure.c` is a tiny bytecode "compiler" that demonstrates how to emit
+`OP_MK_CLOSURE` and `OP_CALL_CLOSURE` using the `bc_emit` helpers. It shows a practical
+pattern for emitting closures when the function body is placed after the main code:
+
+- emit main code including a placeholder for the function constant index
+- append the function body to the end of the bytecode buffer
+- add the function constant with `bc_add_const_function(start, nargs)`
+- patch the placeholder bytes in the earlier `OP_MK_CLOSURE` operand with the function const index
+
+Closure bytecode conventions used by this VM:
+- OP_MK_CLOSURE dst, func_const_idx, ncaptures, capture_reg0, capture_reg1, ...
+	- Allocates an object where field 0 = function constant index and fields 1..N = captured Values.
+- OP_CALL_CLOSURE obj_reg, nargs, dst
+	- Reads the closure object from `obj_reg`, looks up the function const, pushes a frame saving
+		the first `nargs` registers, copies capture Values from the closure object into registers
+		starting at `r[nargs]`, then jumps to the function start.
+
+This design ensures captures are reachable from the heap (object fields) and are traced by the GC.
+
+Build & run the compiler example with CMake:
+
+```powershell
+cmake --build . --target vm_compiler_closure
+./vm_compiler_closure.exe
+```
+

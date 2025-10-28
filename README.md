@@ -14,5 +14,5 @@ Reuse object slots with free-list to avoid churning and keep object indices smal
 
 
 To-do:
-    1. 
-    2. Improve garbage collection for scale (maybe copy mark and sweek to reduct fragmentation or performance GC like generational/parallel collector)
+    1. Improve garbage collection for scale (maybe copy mark and sweek to reduct fragmentation or performance GC like generational/parallel collector)
+    2. Improve on compiler to a front-end that compiles source language to bytecode
